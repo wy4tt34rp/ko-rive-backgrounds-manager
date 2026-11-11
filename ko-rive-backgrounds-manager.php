@@ -2,7 +2,7 @@
 /**
  * Plugin Name: KO – Rive Manager
  * Description: Manages reusable Rive backgrounds, heroes, and page loaders through one library and one shared runtime.
- * Version: 3.0.11
+ * Version: 3.0.15
  * Author: KO
  * Author URI: mailto:6822858@kevinoneill.us
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class KO_Rive_Backgrounds_Manager {
-	const VERSION                  = '3.0.11';
+	const VERSION                  = '3.0.15';
 	const MANAGE_CAPABILITY        = 'edit_pages';
 	const LIBRARY_OPTION           = 'ko_rive_library_v3';
 	const SETTINGS_OPTION          = 'ko_rive_manager_settings_v3';
@@ -29,6 +29,7 @@ final class KO_Rive_Backgrounds_Manager {
 	const LEGACY_SHORTCODE         = 'ko_rive_background';
 	const UPLOAD_DIRECTORY         = 'ko-rive-backgrounds-manager';
 	const RUNTIME_VERSION          = '2.38.5';
+	const NAVIGATION_HANDOFF_KEY   = 'koRiveLoaderNavigationHandoff';
 
 	private $assets_enqueued = false;
 	private $loader_rendered = false;
@@ -171,22 +172,24 @@ final class KO_Rive_Backgrounds_Manager {
 	}
 
 	public function admin_menu() {
-		add_options_page(
+		add_menu_page(
 			__( 'KO – Rive Manager', 'ko-rive-backgrounds-manager' ),
 			__( 'Rive Manager', 'ko-rive-backgrounds-manager' ),
 			self::MANAGE_CAPABILITY,
 			self::MENU_SLUG,
-			array( $this, 'render_admin_page' )
+			array( $this, 'render_admin_page' ),
+			'dashicons-format-image',
+			58
 		);
 	}
 
 	public function plugin_action_links( $links ) {
-		array_unshift( $links, '<a href="' . esc_url( admin_url( 'options-general.php?page=' . self::MENU_SLUG ) ) . '">' . esc_html__( 'Manage Rive Library', 'ko-rive-backgrounds-manager' ) . '</a>' );
+		array_unshift( $links, '<a href="' . esc_url( self::admin_page_url() ) . '">' . esc_html__( 'Manage Rive Library', 'ko-rive-backgrounds-manager' ) . '</a>' );
 		return $links;
 	}
 
 	public function admin_assets( $hook ) {
-		if ( 'settings_page_' . self::MENU_SLUG !== $hook ) {
+		if ( 'toplevel_page_' . self::MENU_SLUG !== $hook ) {
 			return;
 		}
 		wp_enqueue_style( 'ko-rive-manager-admin', plugin_dir_url( __FILE__ ) . 'assets/css/admin.css', array(), self::VERSION );
@@ -196,6 +199,10 @@ final class KO_Rive_Backgrounds_Manager {
 	private static function library() {
 		$library = get_option( self::LIBRARY_OPTION, array() );
 		return is_array( $library ) ? $library : array();
+	}
+
+	private static function admin_page_url( $args = array() ) {
+		return add_query_arg( array_merge( array( 'page' => self::MENU_SLUG ), $args ), admin_url( 'admin.php' ) );
 	}
 
 	private static function legacy_sources() {
@@ -337,7 +344,8 @@ final class KO_Rive_Backgrounds_Manager {
 			'loader_page_ids' => array(), 'loader_post_ids' => array(), 'loader_category_ids' => array(),
 			'loader_category_archives' => 0, 'loader_posts_categories' => 0, 'loader_front_page' => 0,
 			'loader_posts_page' => 0, 'loader_search' => 0, 'loader_not_found' => 0,
-			'loader_frequency' => 'every_load', 'loader_minimum' => 500, 'loader_maximum' => 5000,
+			'loader_frequency' => 'every_load', 'loader_grace' => 350, 'loader_minimum_visible' => 250,
+			'loader_minimum' => 500, 'loader_maximum' => 5000,
 			'loader_hold' => 150, 'loader_fade' => 350, 'loader_completion_event' => '', 'loader_lock_scroll' => 1,
 			'loader_reduced_motion' => 1, 'loader_aria_label' => 'Loading page',
 		);
@@ -492,7 +500,7 @@ final class KO_Rive_Backgrounds_Manager {
 		$upload      = isset( $_FILES['rive_file'] ) && is_array( $_FILES['rive_file'] ) ? $_FILES['rive_file'] : array();
 		$library     = self::library();
 		$result      = self::save_item( $library, $original_id, $id, $name, $link, $_POST, $upload );
-		$args        = array( 'page' => self::MENU_SLUG );
+		$args        = array();
 		if ( is_wp_error( $result ) ) {
 			$args['ko_rive_notice']  = 'error';
 			$args['ko_rive_message'] = $result->get_error_message();
@@ -502,7 +510,7 @@ final class KO_Rive_Backgrounds_Manager {
 		} else {
 			$args['ko_rive_notice'] = 'saved';
 		}
-		wp_safe_redirect( add_query_arg( $args, admin_url( 'options-general.php' ) ) );
+		wp_safe_redirect( self::admin_page_url( $args ) );
 		exit;
 	}
 
@@ -566,8 +574,8 @@ final class KO_Rive_Backgrounds_Manager {
 			$aliases[] = $original_id;
 		}
 		$item['aliases'] = array_values( array_unique( array_filter( $aliases ) ) );
-		if ( $item['loader_maximum'] < $item['loader_minimum'] ) {
-			$item['loader_maximum'] = $item['loader_minimum'] + 1000;
+		if ( $item['loader_maximum'] <= $item['loader_grace'] ) {
+			$item['loader_maximum'] = min( 30000, $item['loader_grace'] + 1000 );
 		}
 
 		if ( $original_id && $original_id !== $id ) {
@@ -609,7 +617,8 @@ final class KO_Rive_Backgrounds_Manager {
 			'loader_search' => ! empty( $raw['loader_search'] ) ? 1 : 0,
 			'loader_not_found' => ! empty( $raw['loader_not_found'] ) ? 1 : 0,
 			'loader_frequency' => self::sanitize_choice( $raw['loader_frequency'] ?? '', array( 'every_load', 'session', 'daily' ), 'every_load' ),
-			'loader_minimum' => min( 10000, absint( $raw['loader_minimum'] ?? 500 ) ),
+			'loader_grace' => min( 3000, absint( $raw['loader_grace'] ?? 350 ) ),
+			'loader_minimum_visible' => min( 3000, absint( $raw['loader_minimum_visible'] ?? 250 ) ),
 			'loader_maximum' => min( 30000, max( 1000, absint( $raw['loader_maximum'] ?? 5000 ) ) ),
 			'loader_hold' => min( 3000, absint( $raw['loader_hold'] ?? 150 ) ),
 			'loader_fade' => min( 3000, absint( $raw['loader_fade'] ?? 350 ) ),
@@ -774,11 +783,11 @@ final class KO_Rive_Backgrounds_Manager {
 	}
 
 	private function redirect_notice( $notice, $message = '' ) {
-		$args = array( 'page' => self::MENU_SLUG, 'ko_rive_notice' => $notice );
+		$args = array( 'ko_rive_notice' => $notice );
 		if ( $message ) {
 			$args['ko_rive_message'] = $message;
 		}
-		wp_safe_redirect( add_query_arg( $args, admin_url( 'options-general.php' ) ) );
+		wp_safe_redirect( self::admin_page_url( $args ) );
 		exit;
 	}
 
@@ -821,7 +830,7 @@ final class KO_Rive_Backgrounds_Manager {
 							<p class="ko-rbm-meta"><strong><?php esc_html_e( 'Artboard:', 'ko-rive-backgrounds-manager' ); ?></strong> <?php echo esc_html( $item['artboard'] ?: __( 'Default', 'ko-rive-backgrounds-manager' ) ); ?> &middot; <strong><?php esc_html_e( 'Playback:', 'ko-rive-backgrounds-manager' ); ?></strong> <?php echo esc_html( $item['state_machine'] ?: ( $item['animation'] ?: __( 'Default', 'ko-rive-backgrounds-manager' ) ) ); ?></p>
 							<?php if ( 'loader' === $item['role'] ) : ?><p class="ko-rbm-loader-status"><strong><?php esc_html_e( 'Automatic display:', 'ko-rive-backgrounds-manager' ); ?></strong> <?php echo esc_html( self::loader_target_label( $item ) ); ?></p><?php endif; ?>
 							<div class="ko-rbm-uses"><div><strong><?php esc_html_e( 'Class:', 'ko-rive-backgrounds-manager' ); ?></strong><code><?php echo esc_html( $id ); ?></code><button type="button" class="button ko-rbm-copy" data-copy="<?php echo esc_attr( $id ); ?>"><?php esc_html_e( 'Copy', 'ko-rive-backgrounds-manager' ); ?></button></div><div><strong><?php esc_html_e( 'Shortcode:', 'ko-rive-backgrounds-manager' ); ?></strong><code><?php echo esc_html( $shortcode ); ?></code><button type="button" class="button ko-rbm-copy" data-copy="<?php echo esc_attr( $shortcode ); ?>"><?php esc_html_e( 'Copy', 'ko-rive-backgrounds-manager' ); ?></button></div></div>
-							<div class="ko-rbm-item-actions"><a class="button" href="<?php echo esc_url( admin_url( 'options-general.php?page=' . self::MENU_SLUG . '&edit=' . rawurlencode( $id ) ) ); ?>"><?php esc_html_e( 'Edit', 'ko-rive-backgrounds-manager' ); ?></a><form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="ko-rbm-delete"><?php wp_nonce_field( 'ko_rive_manage', 'ko_rive_nonce' ); ?><input type="hidden" name="action" value="ko_rive_delete_item"><input type="hidden" name="item_id" value="<?php echo esc_attr( $id ); ?>"><button type="submit" class="button ko-rbm-delete-button" data-confirm="<?php esc_attr_e( 'Remove this item from the unified Library? Original legacy data remains available.', 'ko-rive-backgrounds-manager' ); ?>"><?php esc_html_e( 'Delete', 'ko-rive-backgrounds-manager' ); ?></button></form></div>
+							<div class="ko-rbm-item-actions"><a class="button" href="<?php echo esc_url( self::admin_page_url( array( 'edit' => $id ) ) ); ?>"><?php esc_html_e( 'Edit', 'ko-rive-backgrounds-manager' ); ?></a><form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="ko-rbm-delete"><?php wp_nonce_field( 'ko_rive_manage', 'ko_rive_nonce' ); ?><input type="hidden" name="action" value="ko_rive_delete_item"><input type="hidden" name="item_id" value="<?php echo esc_attr( $id ); ?>"><button type="submit" class="button ko-rbm-delete-button" data-confirm="<?php esc_attr_e( 'Remove this item from the unified Library? Original legacy data remains available.', 'ko-rive-backgrounds-manager' ); ?>"><?php esc_html_e( 'Delete', 'ko-rive-backgrounds-manager' ); ?></button></form></div>
 						</article>
 					<?php endforeach; ?>
 					</div><?php endif; ?>
@@ -847,11 +856,11 @@ final class KO_Rive_Backgrounds_Manager {
 							<div class="ko-rbm-fields-2"><div><label for="ko-rbm-priority"><?php esc_html_e( 'Priority', 'ko-rive-backgrounds-manager' ); ?></label><input id="ko-rbm-priority" name="loader_priority" type="number" min="1" max="999" value="<?php echo absint( $editing['loader_priority'] ); ?>"></div><div><label for="ko-rbm-display"><?php esc_html_e( 'Display', 'ko-rive-backgrounds-manager' ); ?></label><?php self::render_select( 'loader_display_mode', $editing['loader_display_mode'], array( 'everywhere' => 'Everywhere', 'include_selected' => 'Only selected locations', 'exclude_selected' => 'Everywhere except selected locations' ), 'ko-rbm-display' ); ?></div></div>
 							<?php self::render_target_select( 'loader_page_ids', __( 'Pages', 'ko-rive-backgrounds-manager' ), $pages, $editing['loader_page_ids'], 'ID', 'post_title' ); self::render_target_select( 'loader_post_ids', __( 'Posts', 'ko-rive-backgrounds-manager' ), $posts, $editing['loader_post_ids'], 'ID', 'post_title' ); self::render_target_select( 'loader_category_ids', __( 'Categories', 'ko-rive-backgrounds-manager' ), $categories, $editing['loader_category_ids'], 'term_id', 'name' ); ?>
 							<div class="ko-rbm-check-grid"><label><input type="checkbox" name="loader_front_page" value="1" <?php checked( $editing['loader_front_page'] ); ?>> <?php esc_html_e( 'Front page', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_posts_page" value="1" <?php checked( $editing['loader_posts_page'] ); ?>> <?php esc_html_e( 'Posts page', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_search" value="1" <?php checked( $editing['loader_search'] ); ?>> <?php esc_html_e( 'Search results', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_not_found" value="1" <?php checked( $editing['loader_not_found'] ); ?>> <?php esc_html_e( '404 pages', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_category_archives" value="1" <?php checked( $editing['loader_category_archives'] ); ?>> <?php esc_html_e( 'Selected category archives', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_posts_categories" value="1" <?php checked( $editing['loader_posts_categories'] ); ?>> <?php esc_html_e( 'Posts in selected categories', 'ko-rive-backgrounds-manager' ); ?></label></div>
-							<div class="ko-rbm-fields-2"><div><label for="ko-rbm-frequency"><?php esc_html_e( 'Frequency', 'ko-rive-backgrounds-manager' ); ?></label><?php self::render_select( 'loader_frequency', $editing['loader_frequency'], array( 'every_load' => 'Every matching load', 'session' => 'Once per session', 'daily' => 'Once every 24 hours' ), 'ko-rbm-frequency' ); ?></div><div><label for="ko-rbm-event"><?php esc_html_e( 'Completion event', 'ko-rive-backgrounds-manager' ); ?></label><input id="ko-rbm-event" name="loader_completion_event" type="text" value="<?php echo esc_attr( $editing['loader_completion_event'] ); ?>"></div></div>
-							<div class="ko-rbm-fields-4"><div><label><?php esc_html_e( 'Minimum ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_minimum" type="number" min="0" max="10000" value="<?php echo absint( $editing['loader_minimum'] ); ?>"></div><div><label><?php esc_html_e( 'Maximum ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_maximum" type="number" min="1000" max="30000" value="<?php echo absint( $editing['loader_maximum'] ); ?>"></div><div><label><?php esc_html_e( 'Exit pause ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_hold" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_hold'] ); ?>"></div><div><label><?php esc_html_e( 'Fade ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_fade" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_fade'] ); ?>"></div></div><p class="description"><?php esc_html_e( 'For a softer exit, try an Exit pause of 150 ms and a Fade of 700 ms.', 'ko-rive-backgrounds-manager' ); ?></p>
+							<div class="ko-rbm-fields-2"><div><label for="ko-rbm-frequency"><?php esc_html_e( 'Frequency', 'ko-rive-backgrounds-manager' ); ?></label><?php self::render_select( 'loader_frequency', $editing['loader_frequency'], array( 'every_load' => 'Every matching load', 'session' => 'Once per session', 'daily' => 'Once every 24 hours' ), 'ko-rbm-frequency' ); ?></div><div><label for="ko-rbm-event"><?php esc_html_e( 'Completion event (legacy)', 'ko-rive-backgrounds-manager' ); ?></label><input id="ko-rbm-event" name="loader_completion_event" type="text" value="<?php echo esc_attr( $editing['loader_completion_event'] ); ?>"></div></div>
+							<div class="ko-rbm-fields-4"><div><label><?php esc_html_e( 'Grace ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_grace" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_grace'] ); ?>"></div><div><label><?php esc_html_e( 'Minimum visible ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_minimum_visible" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_minimum_visible'] ); ?>"></div><div><label><?php esc_html_e( 'Maximum wait ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_maximum" type="number" min="1000" max="30000" value="<?php echo absint( $editing['loader_maximum'] ); ?>"></div><div><label><?php esc_html_e( 'Exit pause ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_hold" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_hold'] ); ?>"></div><div><label><?php esc_html_e( 'Fade ms', 'ko-rive-backgrounds-manager' ); ?></label><input name="loader_fade" type="number" min="0" max="3000" value="<?php echo absint( $editing['loader_fade'] ); ?>"></div></div><p class="description"><?php esc_html_e( 'Grace suppresses the loader on fast pages. If shown, it remains until visible viewport media settles, subject to Maximum wait. Completion event no longer delays the adaptive exit.', 'ko-rive-backgrounds-manager' ); ?></p>
 							<label for="ko-rbm-aria"><?php esc_html_e( 'Accessibility label', 'ko-rive-backgrounds-manager' ); ?></label><input id="ko-rbm-aria" name="loader_aria_label" type="text" value="<?php echo esc_attr( $editing['loader_aria_label'] ); ?>"><div class="ko-rbm-check-grid"><label><input type="checkbox" name="loader_lock_scroll" value="1" <?php checked( $editing['loader_lock_scroll'] ); ?>> <?php esc_html_e( 'Lock scrolling', 'ko-rive-backgrounds-manager' ); ?></label><label><input type="checkbox" name="loader_reduced_motion" value="1" <?php checked( $editing['loader_reduced_motion'] ); ?>> <?php esc_html_e( 'Respect reduced motion', 'ko-rive-backgrounds-manager' ); ?></label></div>
 						</div>
-						<div class="ko-rbm-form-actions"><button class="button button-primary" type="submit"><?php echo esc_html( $edit_id ? __( 'Save Changes', 'ko-rive-backgrounds-manager' ) : __( 'Add to Library', 'ko-rive-backgrounds-manager' ) ); ?></button><?php if ( $edit_id ) : ?><a class="button" href="<?php echo esc_url( admin_url( 'options-general.php?page=' . self::MENU_SLUG ) ); ?>"><?php esc_html_e( 'Cancel', 'ko-rive-backgrounds-manager' ); ?></a><?php endif; ?></div>
+						<div class="ko-rbm-form-actions"><button class="button button-primary" type="submit"><?php echo esc_html( $edit_id ? __( 'Save Changes', 'ko-rive-backgrounds-manager' ) : __( 'Add to Library', 'ko-rive-backgrounds-manager' ) ); ?></button><?php if ( $edit_id ) : ?><a class="button" href="<?php echo esc_url( self::admin_page_url() ); ?>"><?php esc_html_e( 'Cancel', 'ko-rive-backgrounds-manager' ); ?></a><?php endif; ?></div>
 					</form>
 				</section>
 			</div><footer>KO – Rive Manager v<?php echo esc_html( self::VERSION ); ?></footer>
@@ -979,7 +988,8 @@ final class KO_Rive_Backgrounds_Manager {
 				'loader' => array(
 					'enabled' => (bool) $item['loader_enabled'], 'priority' => (int) $item['loader_priority'],
 					'displayMode' => $item['loader_display_mode'], 'targetUrls' => self::loader_target_urls( $item ),
-					'frequency' => $item['loader_frequency'], 'minimumDuration' => $item['loader_minimum'], 'maximumDuration' => $item['loader_maximum'],
+					'frequency' => $item['loader_frequency'], 'graceDuration' => $item['loader_grace'],
+					'minimumVisibleDuration' => $item['loader_minimum_visible'], 'maximumDuration' => $item['loader_maximum'],
 					'exitHoldDuration' => $item['loader_hold'], 'fadeDuration' => $item['loader_fade'], 'completionEvent' => $item['loader_completion_event'],
 					'lockScroll' => (bool) $item['loader_lock_scroll'], 'respectReducedMotion' => (bool) $item['loader_reduced_motion'],
 					'ariaLabel' => $item['loader_aria_label'], 'storageKey' => 'koRiveLoaderSeen-' . $id,
@@ -990,6 +1000,7 @@ final class KO_Rive_Backgrounds_Manager {
 		return array(
 			'items' => $items, 'classes' => $classes,
 			'automaticLoaders' => ! self::standalone_loader_plugin_active(),
+			'navigationHandoffKey' => self::NAVIGATION_HANDOFF_KEY,
 			'runtimeUrl' => add_query_arg( 'ver', self::RUNTIME_VERSION, plugin_dir_url( __FILE__ ) . 'assets/vendor/rive/rive.js' ),
 			'wasmUrl' => add_query_arg( 'ver', self::RUNTIME_VERSION, plugin_dir_url( __FILE__ ) . 'assets/vendor/rive/rive.wasm' ),
 		);
@@ -1026,13 +1037,35 @@ final class KO_Rive_Backgrounds_Manager {
 				'respectReducedMotion' => (bool) $item['loader_reduced_motion'],
 				'lockScroll' => (bool) $item['loader_lock_scroll'],
 				'fallbackColor' => $item['fallback_enabled'] ? $item['fallback_color'] : '#ffffff',
+				'graceDuration' => (int) $item['loader_grace'],
+				'maximumDuration' => (int) $item['loader_maximum'],
 			);
 		}
 		if ( ! $loaders ) { return; }
 		usort( $loaders, function( $a, $b ) { return $a['priority'] <=> $b['priority']; } );
+		$handoff_key = self::NAVIGATION_HANDOFF_KEY;
 		?>
-		<style id="ko-rive-loader-bootstrap-css">html.ko-rive-loader-pending::before{content:"";position:fixed;inset:0;z-index:2147483001;display:block;background:var(--ko-rive-loader-bootstrap-bg,#fff);pointer-events:auto}html.ko-rive-loader-pending-lock{overflow:hidden!important;overscroll-behavior:none;scrollbar-gutter:stable}html.ko-rive-loader-pending-lock body{overflow:hidden!important;overscroll-behavior:none}</style>
-		<script id="ko-rive-loader-bootstrap-js">(function(){var items=<?php echo wp_json_encode( $loaders ); ?>,current,match=null,i,item,targets,selected,storage,previous,root=document.documentElement;function normalized(value){var parsed,path;try{parsed=new URL(value,window.location.href);}catch(error){return '';}if(!/^https?:$/.test(parsed.protocol)||parsed.origin!==window.location.origin){return '';}path=parsed.pathname.replace(/\/+$/,'')||'/';return parsed.origin+path;}function seen(value){try{if(value.frequency==='session'){storage=window.sessionStorage;return !!storage.getItem(value.storageKey);}if(value.frequency==='daily'){storage=window.localStorage;previous=parseInt(storage.getItem(value.storageKey),10)||0;return Date.now()-previous<86400000;}}catch(error){}return false;}current=normalized(window.location.href);for(i=0;i<items.length;i++){item=items[i];targets=(item.targetUrls||[]).map(normalized).filter(Boolean);selected=targets.indexOf(current)!==-1;if(item.displayMode==='everywhere'||(item.displayMode==='include_selected'&&(selected||item.serverMatched))||(item.displayMode==='exclude_selected'&&!selected&&item.serverMatched)){if(!seen(item)&&!(item.respectReducedMotion&&window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){match=item;break;}}}if(!match){return;}root.classList.add('ko-rive-loader-pending');if(match.lockScroll){root.classList.add('ko-rive-loader-pending-lock');}root.style.setProperty('--ko-rive-loader-bootstrap-bg',match.fallbackColor||'#ffffff');root.dataset.koRiveLoaderPending=match.id;function release(id){if(id&&root.dataset.koRiveLoaderPending&&root.dataset.koRiveLoaderPending!==id){return;}root.classList.remove('ko-rive-loader-pending','ko-rive-loader-pending-lock');root.style.removeProperty('--ko-rive-loader-bootstrap-bg');delete root.dataset.koRiveLoaderPending;}window.KORiveLoaderBootstrap={id:match.id,release:release};window.setTimeout(function(){release(match.id);},15000);}());</script>
+		<style id="ko-rive-loader-bootstrap-css">html.ko-rive-loader-pending::before{content:"";position:fixed;inset:0;z-index:2147483001;display:block;background-color:var(--ko-rive-loader-bootstrap-bg,#fff);background-image:var(--ko-rive-loader-bootstrap-frame,none);background-position:center;background-repeat:no-repeat;background-size:100% 100%;pointer-events:auto}html.ko-rive-loader-pending-lock{overflow:hidden!important;overscroll-behavior:none;scrollbar-gutter:stable}html.ko-rive-loader-pending-lock body{overflow:hidden!important;overscroll-behavior:none}</style>
+		<script id="ko-rive-loader-bootstrap-js">
+		(function(){
+			var items=<?php echo wp_json_encode( $loaders ); ?>,handoffKey=<?php echo wp_json_encode( $handoff_key ); ?>,current,match=null,handoff=null,i,item,targets,selected,storage,previous,root=document.documentElement,startedAt=Date.now(),revealedAt=0,revealAfter=0,frameDataUrl='',released=false,revealTimer,safetyTimer;
+			function normalized(value){var parsed,path;try{parsed=new URL(value,window.location.href);}catch(error){return '';}if(!/^https?:$/.test(parsed.protocol)||parsed.origin!==window.location.origin){return '';}path=parsed.pathname.replace(/\/+$/,'')||'/';return parsed.origin+path;}
+			function comparable(value){var parsed;try{parsed=new URL(value,window.location.href);}catch(error){return '';}if(!/^https?:$/.test(parsed.protocol)||parsed.origin!==window.location.origin){return '';}return parsed.origin+parsed.pathname+parsed.search;}
+			function validFrame(value){return typeof value==='string'&&value.length<=350000&&/^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(value);}
+			function readHandoff(){var value=null;try{value=JSON.parse(window.sessionStorage.getItem(handoffKey)||'null');window.sessionStorage.removeItem(handoffKey);}catch(error){}if(!value||value.version!==1||!value.id||value.destination!==comparable(window.location.href)||(parseInt(value.expiresAt,10)||0)<Date.now()){return null;}return value;}
+			function seen(value){try{if(value.frequency==='session'){storage=window.sessionStorage;return !!storage.getItem(value.storageKey);}if(value.frequency==='daily'){storage=window.localStorage;previous=parseInt(storage.getItem(value.storageKey),10)||0;return Date.now()-previous<86400000;}}catch(error){}return false;}
+			current=normalized(window.location.href);handoff=readHandoff();
+			for(i=0;i<items.length;i++){item=items[i];targets=(item.targetUrls||[]).map(normalized).filter(Boolean);selected=targets.indexOf(current)!==-1;if(item.displayMode==='everywhere'||(item.displayMode==='include_selected'&&(selected||item.serverMatched))||(item.displayMode==='exclude_selected'&&!selected&&item.serverMatched)){if((handoff&&handoff.id===item.id)||(!seen(item)&&!(item.respectReducedMotion&&window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches))){match=item;break;}}}
+			if(!match){return;}if(!handoff||handoff.id!==match.id){handoff=null;}
+			if(handoff){startedAt=parseInt(handoff.startedAt,10)||startedAt;revealedAt=parseInt(handoff.revealedAt,10)||0;revealAfter=Math.max(0,parseInt(handoff.revealAfter,10)||0);if(validFrame(handoff.frameDataUrl)&&(parseInt(handoff.frameCapturedAt,10)||0)>=startedAt){frameDataUrl=handoff.frameDataUrl;}}else{revealAfter=Math.max(0,parseInt(match.graceDuration,10)||0);}
+			root.style.setProperty('--ko-rive-loader-bootstrap-bg',match.fallbackColor||'#ffffff');if(frameDataUrl){root.style.setProperty('--ko-rive-loader-bootstrap-frame','url("'+frameDataUrl+'")');}root.dataset.koRiveLoaderPending=match.id;
+			function reveal(id){if(released||(id&&id!==match.id)){return;}if(!revealedAt){revealedAt=Date.now();}root.classList.add('ko-rive-loader-pending');if(match.lockScroll){root.classList.add('ko-rive-loader-pending-lock');}}
+			function release(id){if(released||(id&&root.dataset.koRiveLoaderPending&&root.dataset.koRiveLoaderPending!==id)){return;}released=true;window.clearTimeout(revealTimer);window.clearTimeout(safetyTimer);root.classList.remove('ko-rive-loader-pending','ko-rive-loader-pending-lock');root.style.removeProperty('--ko-rive-loader-bootstrap-bg');root.style.removeProperty('--ko-rive-loader-bootstrap-frame');delete root.dataset.koRiveLoaderPending;}
+			window.KORiveLoaderBootstrap={id:match.id,startedAt:startedAt,frameDataUrl:frameDataUrl,get revealedAt(){return revealedAt;},isRevealed:function(){return revealedAt>0&&!released;},reveal:reveal,release:release};
+			if(revealedAt){reveal(match.id);}else{revealTimer=window.setTimeout(function(){reveal(match.id);},Math.max(0,revealAfter-(Date.now()-startedAt)));}
+			safetyTimer=window.setTimeout(function(){release(match.id);},Math.max(15000,(parseInt(match.maximumDuration,10)||5000)+10000));
+		}());
+		</script>
 		<?php
 	}
 

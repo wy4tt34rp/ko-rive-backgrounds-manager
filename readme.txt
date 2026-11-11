@@ -4,7 +4,7 @@ Tags: rive, animated background, hero, page loader, shortcode, animation
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.0.11
+Stable tag: 3.0.15
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -24,7 +24,13 @@ and:
 
 The plugin does not add another prefix. Each Library item receives its own ID and its own complete shortcode.
 
-Backgrounds can be attached to an existing Divi or WordPress module with the assigned class, or placed with the shortcode. Heroes retain a dedicated in-flow hero renderer. Page Loader items include their own targeting, priority, frequency, timing, completion-event, and accessibility settings. When multiple enabled loaders match a page, the lowest priority number runs.
+Backgrounds can be attached to an existing Divi or WordPress module with the assigned class, or placed with the shortcode. Heroes retain a dedicated in-flow hero renderer. Page Loader items include their own targeting, priority, frequency, adaptive timing, and accessibility settings. When multiple enabled loaders match a page, the lowest priority number runs.
+
+Adaptive Page Loaders wait through a short configurable grace period. Fast pages suppress the overlay completely. Slower pages show it while images, videos, iframes, and managed Rive items intersecting the initial viewport settle, then exit after two stable paint passes. Offscreen resources and the loader's decorative Rive animation do not delay the exit, and Maximum wait provides a bounded release.
+
+Eligible same-tab internal link clicks also arm a short navigation handoff. If the destination responds immediately, the loader remains suppressed. If the document response is slower, the current page starts the loader promptly and passes its timing state to the destination so the initial visible content remains covered.
+
+When the outgoing loader has painted a useful frame, the Manager captures a bounded WebP snapshot and carries it with that same-tab handoff. The destination paints the captured frame in its early head shell, keeps it over the restarted Rive canvas until that canvas produces useful branded paint, then crossfades between them. This removes the solid fallback frame at document replacement without trying to persist a live canvas across documents.
 
 The bundled Rive runtime is loaded once. Files marked Preload receive head preload hints. Files marked Lazy Load are requested when their visible placement approaches the viewport. Hidden navigation modules are not initialized until they become visible. Multiple placements of the same Rive asset share one browser fetch.
 
@@ -50,7 +56,7 @@ The Library includes a Re-import / Repair Legacy Items action. It adds missing c
 
 1. Upload the plugin ZIP in Plugins > Add New > Upload Plugin.
 2. Activate KO – Rive Manager.
-3. Open Settings > Rive Manager and confirm the copied Library items.
+3. Open the top-level Rive Manager menu and confirm the copied Library items.
 4. Assign each item its desired Background, Hero, or Page Loader role and Preload or Lazy Load policy.
 5. Use the displayed class or unique `[ko_rive id="assigned-class"]` shortcode.
 6. After verifying the unified Hero and Loader on staging, deactivate the standalone KO – Rive Hero and KO – Rive Page Loader plugins.
@@ -75,7 +81,15 @@ Preload adds early browser hints for the shared runtime and that Rive file. Lazy
 
 = How does the plugin prevent a white flash? =
 
-The configured fallback color is painted immediately. If a poster / first-frame URL is supplied, it appears before the Rive canvas and fades away when the animation is ready.
+Backgrounds and Heroes paint their configured fallback color immediately. An adaptive Page Loader waits through its Grace setting first, so fast pages do not flash an unnecessary overlay. If the page is still waiting on visible media, the fallback color and loader cover it until that initial viewport settles.
+
+= What do the adaptive Page Loader timings mean? =
+
+Grace is how long a matching page gets to paint its initial viewport before the overlay appears. Minimum visible prevents a loader that has appeared from flashing away instantly. Maximum wait is the hard viewport-readiness limit. Exit pause and Fade control the final transition. The legacy Completion event value is retained for compatibility but does not hold the adaptive loader open.
+
+For an eligible internal navigation click, the Manager uses the shorter of Grace or 120 ms before showing the outgoing loader. Modified clicks, new-tab links, downloads, external links, and same-page anchors are left alone. Browser back/forward restores that already have a ready page also remain loader-free.
+
+The captured handoff frame is validated, capped at 350,000 characters, stored only in same-tab session storage, bound to the exact destination and loader ID, and removed when the destination reads it. Capture or storage failure falls back to the normal bounded loader without delaying navigation. A Rive state machine cannot be serialized across full-document navigation, so the destination starts a new instance behind the carried frame and crossfades when ready.
 
 = What happens to the old plugin settings? =
 
@@ -91,9 +105,36 @@ Yes. Choose the file in the Library editor. The Manager validates its extension,
 
 = Who can manage the Rive Library? =
 
-Administrators and users with the Editor role can open Rive Manager and add, edit, remove, or repair Library items. Authors, Contributors, and Subscribers do not receive access by default.
+Administrators and users with the Editor role can open the top-level Rive Manager admin menu and add, edit, remove, or repair Library items. Authors, Contributors, and Subscribers do not receive access by default.
 
 == Changelog ==
+
+= 3.0.15 =
+* Moves Rive Manager to its own top-level admin menu so the screen is visible to users with the Editor role.
+* Keeps the `edit_pages` capability requirement and nonce verification on every add, edit, delete, and legacy-repair action.
+* Preserves the v3.0.14 loader frame handoff, unified Library data, and all existing public classes and shortcodes.
+
+= 3.0.14 =
+* Captures the last useful painted outgoing loader frame as a bounded WebP and carries it through the existing same-tab navigation handoff.
+* Paints the validated frame from the destination head before body content or the restarted Rive canvas can expose the solid fallback.
+* Holds the carried frame above the destination loader until its new Rive canvas produces useful branded paint, then crossfades between them.
+* Rejects empty or white-cleared captures, validates destination, loader, expiry, type, and size, and falls back safely when capture or session storage fails.
+* Makes the configured loader exit fade visible instead of hiding the element at the start of its opacity transition.
+* Preserves fast-load suppression, viewport readiness, bounded cleanup, Editor access, and Library data.
+
+= 3.0.13 =
+* Starts a matching Page Loader from the current document when an eligible internal navigation remains pending beyond a short lead threshold.
+* Hands the loader ID, destination, start time, and reveal state to the destination document through same-tab session storage.
+* Keeps fast destinations suppressible while covering slow document responses before destination HTML and scripts arrive.
+* Excludes modified clicks, new-tab targets, downloads, external links, and same-page anchors, and retains a bounded failure cleanup.
+* Preserves adaptive visible-viewport release, Editor access, unified Library data, and existing loader settings.
+
+= 3.0.12 =
+* Adds an adaptive Page Loader grace period that suppresses the overlay completely on fast page loads.
+* Waits only for images, videos, iframes, and managed Rive items intersecting the initial viewport, followed by two stable paint passes.
+* Stops offscreen resources, full-window load completion, and the decorative Rive completion event from delaying the exit.
+* Treats resource errors as settled and retains Maximum wait as a bounded failure release.
+* Preserves Editor access, unified Library data, loader targeting, and per-load frequency behavior.
 
 = 3.0.11 =
 * Allows users with the WordPress Editor role to access and manage the Rive Library.

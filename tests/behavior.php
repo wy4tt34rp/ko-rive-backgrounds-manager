@@ -8,14 +8,14 @@ $GLOBALS['ko_test_shortcodes'] = array();
 $GLOBALS['ko_test_upload_dir'] = sys_get_temp_dir() . '/ko-rive-manager-test-' . getmypid();
 $GLOBALS['ko_test_queried_id'] = 0;
 $GLOBALS['ko_test_post_types'] = array();
-$GLOBALS['ko_test_options_page'] = array();
+$GLOBALS['ko_test_menu_page'] = array();
 $GLOBALS['ko_test_current_user_caps'] = array('edit_pages' => true);
 $GLOBALS['ko_test_checked_capability'] = '';
 $GLOBALS['ko_test_nonce_checked'] = array();
 
 function add_action($hook, $callback, $priority = 10) { $GLOBALS['ko_test_actions'][$hook][] = $callback; }
 function add_filter($hook, $callback, $priority = 10, $args = 1) {}
-function add_options_page($page_title, $menu_title, $capability, $menu_slug, $callback) { $GLOBALS['ko_test_options_page'] = compact('page_title', 'menu_title', 'capability', 'menu_slug', 'callback'); return 'settings_page_' . $menu_slug; }
+function add_menu_page($page_title, $menu_title, $capability, $menu_slug, $callback, $icon_url = '', $position = null) { $GLOBALS['ko_test_menu_page'] = compact('page_title', 'menu_title', 'capability', 'menu_slug', 'callback', 'icon_url', 'position'); return 'toplevel_page_' . $menu_slug; }
 function add_shortcode($tag, $callback) { $GLOBALS['ko_test_shortcodes'][$tag] = $callback; }
 function shortcode_exists($tag) { return isset($GLOBALS['ko_test_shortcodes'][$tag]); }
 function register_activation_hook($file, $callback) {}
@@ -28,6 +28,7 @@ function add_option($key, $value) { if (array_key_exists($key, $GLOBALS['ko_test
 function update_option($key, $value) { $GLOBALS['ko_test_options'][$key] = $value; return true; }
 function current_time($type) { return '2026-07-21 14:00:00'; }
 function __($text, $domain = '') { return $text; }
+function esc_html__($text, $domain = '') { return htmlspecialchars((string) $text, ENT_QUOTES); }
 function sanitize_title($value) { $value = strtolower(trim((string) $value)); $value = preg_replace('/[^a-z0-9-]+/', '-', $value); return trim($value, '-'); }
 function sanitize_text_field($value) { return trim(strip_tags((string) $value)); }
 function sanitize_html_class($value) { return preg_replace('/[^A-Za-z0-9_-]/', '', (string) $value); }
@@ -47,6 +48,7 @@ function add_query_arg($key, $value = null, $url = null) {
     if (is_array($key)) { return ($value ?: '') . '?' . http_build_query($key); }
     return (string) $url . (strpos((string) $url, '?') === false ? '?' : '&') . rawurlencode((string) $key) . '=' . rawurlencode((string) $value);
 }
+function admin_url($path = '') { return 'https://example.test/wp-admin/' . ltrim((string) $path, '/'); }
 function home_url($path = '/') { return 'https://example.test' . $path; }
 function get_permalink($id) { return $id ? 'https://example.test/page-' . absint($id) . '/' : false; }
 function get_category_link($id) { return $id ? 'https://example.test/category-' . absint($id) . '/' : false; }
@@ -165,7 +167,10 @@ ko_assert($library['rive-hero']['source_owner'] === 'unified', 'The metadata rep
 $manager = new KO_Rive_Backgrounds_Manager();
 $manager->admin_menu();
 ko_assert(KO_Rive_Backgrounds_Manager::MANAGE_CAPABILITY === 'edit_pages', 'Rive Library management should use an Editor-compatible capability.');
-ko_assert($GLOBALS['ko_test_options_page']['capability'] === 'edit_pages', 'The Rive Manager settings page must be visible to Editors.');
+ko_assert($GLOBALS['ko_test_menu_page']['capability'] === 'edit_pages', 'The Rive Manager admin menu must be visible to Editors.');
+ko_assert($GLOBALS['ko_test_menu_page']['menu_slug'] === 'ko-rive-backgrounds-manager', 'The Editor-visible menu must open the existing Rive Manager screen.');
+$action_links = $manager->plugin_action_links(array());
+ko_assert(strpos($action_links[0], '/wp-admin/admin.php?page=ko-rive-backgrounds-manager') !== false, 'The plugin action link must use the Editor-accessible top-level admin URL.');
 $require_admin = new ReflectionMethod(KO_Rive_Backgrounds_Manager::class, 'require_admin_request');
 if (PHP_VERSION_ID < 80100) { $require_admin->setAccessible(true); }
 $require_admin->invoke($manager);
@@ -197,6 +202,10 @@ $loader_bootstrap = ob_get_clean();
 ko_assert(strpos($loader_bootstrap, 'ko-rive-loader-pending') !== false, 'A matching loader must receive an early head shell before destination content paints.');
 ko_assert(strpos($loader_bootstrap, 'rive-page-loader') !== false && strpos($loader_bootstrap, 'https:\/\/example.test\/page-9\/') !== false, 'The early shell must include the matching loader ID and selected destination URL.');
 ko_assert(strpos($loader_bootstrap, 'scrollbar-gutter:stable') !== false, 'The early loader shell must reserve the scrollbar gutter while scrolling is locked.');
+ko_assert(strpos($loader_bootstrap, 'koRiveLoaderNavigationHandoff') !== false, 'The destination head bootstrap must consume the same-tab navigation handoff.');
+ko_assert(strpos($loader_bootstrap, 'handoff.revealedAt') !== false && strpos($loader_bootstrap, 'handoff.revealAfter') !== false, 'The destination must preserve the source loader reveal state and original lead timing.');
+ko_assert(strpos($loader_bootstrap, '--ko-rive-loader-bootstrap-frame') !== false && strpos($loader_bootstrap, 'handoff.frameDataUrl') !== false, 'The destination head must paint a validated outgoing loader frame before body content replaces it.');
+ko_assert(strpos($loader_bootstrap, 'value.length<=350000') !== false && strpos($loader_bootstrap, 'value.destination!==comparable(window.location.href)') !== false, 'The early frame handoff must remain size-bounded and bound to the exact destination.');
 $library['rive-page-loader'] = $original_loader_for_bootstrap;
 $GLOBALS['ko_test_options']['ko_rive_library_v3'] = $library;
 $url_loader = array_merge($about_loader, array('loader_page_ids' => array(), 'loader_front_page' => 0));
@@ -239,8 +248,9 @@ $raw_loader = array(
     'item_role' => 'loader', 'source_mode' => 'external', 'load_policy' => 'preload',
     'artboard' => 'Loader', 'state_machine' => 'Machine', 'fit' => 'cover', 'alignment' => 'center',
     'fallback_color' => '#ffffff', 'loader_enabled' => 1, 'loader_priority' => 20,
-    'loader_display_mode' => 'everywhere', 'loader_frequency' => 'every_load',
-    'loader_minimum' => 0, 'loader_maximum' => 4000, 'loader_hold' => 180, 'loader_fade' => 250,
+	'loader_display_mode' => 'everywhere', 'loader_frequency' => 'every_load',
+	'loader_grace' => 350, 'loader_minimum_visible' => 250, 'loader_minimum' => 0,
+	'loader_maximum' => 4000, 'loader_hold' => 180, 'loader_fade' => 250,
     'loader_lock_scroll' => 1, 'loader_reduced_motion' => 1, 'loader_aria_label' => 'Loading alternate view',
 );
 $result = $save->invoke(null, $library, '', 'alternate-loader', 'Alternate Loader', 'https://cdn.example.test/alternate-loader.riv', $raw_loader);
@@ -248,6 +258,7 @@ ko_assert($result === true, 'A second Page Loader should be addable to the unifi
 $library = get_option('ko_rive_library_v3');
 ko_assert($library['secondary-hero']['role'] === 'hero' && $library['secondary-hero']['load_policy'] === 'lazy', 'The Hero role and Lazy Load selection should persist.');
 ko_assert($library['alternate-loader']['role'] === 'loader' && $library['alternate-loader']['loader_priority'] === 20, 'The Page Loader role and priority should persist.');
+ko_assert($library['alternate-loader']['loader_grace'] === 350 && $library['alternate-loader']['loader_minimum_visible'] === 250, 'The adaptive Page Loader grace and minimum visible timing should persist.');
 ko_assert($library['alternate-loader']['loader_hold'] === 180 && $library['alternate-loader']['loader_fade'] === 250, 'The Page Loader exit pause and fade duration should persist.');
 ko_assert(get_option('ko_rbm_backgrounds') === $legacy_backgrounds && get_option('ko_rh_hero') === $legacy_hero && get_option('ko_rpl_settings') === $legacy_loader, 'Adding unified items must not mutate any legacy option.');
 $invalid_color = $raw_hero;
@@ -267,13 +278,33 @@ ko_assert(!isset($frontend_config['classes']['yellow']), 'Legacy shortcode alias
 ko_assert(substr_count($frontend_config['runtimeUrl'], 'rive.js') === 1, 'The frontend config should expose one shared runtime.');
 ko_assert($frontend_config['items']['rive-page-loader']['loader']['enabled'] === true, 'The browser config should identify an enabled automatic Page Loader.');
 ko_assert(in_array('https://example.test/', $frontend_config['items']['rive-page-loader']['loader']['targetUrls'], true), 'A selected front page should be exposed to the navigation-start loader matcher.');
+ko_assert($frontend_config['items']['alternate-loader']['loader']['graceDuration'] === 350 && $frontend_config['items']['alternate-loader']['loader']['minimumVisibleDuration'] === 250, 'The browser config should receive adaptive viewport timing controls.');
 ko_assert($frontend_config['items']['alternate-loader']['loader']['exitHoldDuration'] === 180 && $frontend_config['items']['alternate-loader']['loader']['fadeDuration'] === 250, 'The browser config should receive the Page Loader exit timing controls.');
+ko_assert($frontend_config['navigationHandoffKey'] === 'koRiveLoaderNavigationHandoff', 'The source and destination scripts must share one scoped navigation handoff key.');
 
 $frontend_script = file_get_contents(dirname(__DIR__) . '/assets/js/backgrounds.js');
-ko_assert(strpos($frontend_script, "window.addEventListener('load', loadHandler, { once: true });") !== false, 'The Page Loader exit must wait for the destination window load event.');
-ko_assert(strpos($frontend_script, 'if (!animationComplete || !pageReady) { return; }') !== false, 'The Page Loader exit must require both animation completion and destination readiness.');
-ko_assert(substr_count($frontend_script, 'window.requestAnimationFrame(function () {') >= 3, 'The Page Loader should wait for post-load paint frames before exiting.');
-ko_assert(strpos($frontend_script, 'window.setTimeout(markAnimationComplete') !== false, 'The Maximum duration must remain a fallback for a missing Rive completion event.');
+ko_assert(strpos($frontend_script, 'createAdaptiveLoaderGate') !== false, 'The Page Loader must use the adaptive grace and maximum-wait controller.');
+ko_assert(strpos($frontend_script, "document.querySelectorAll('img,video,iframe,.ko-rive-item[data-ko-rive-id]:not(.ko-rive-loader)')") !== false, 'The Page Loader must evaluate media and managed Rive items in the initial visible viewport.');
+ko_assert(strpos($frontend_script, 'elementIsInInitialViewport(element)') !== false, 'Offscreen media must not delay the adaptive Page Loader exit.');
+ko_assert(strpos($frontend_script, "['loadeddata', 'error']") !== false && strpos($frontend_script, "['load', 'error']") !== false, 'Loaded and failed visible resources must both settle viewport readiness.');
+ko_assert(strpos($frontend_script, "['ko-rive:ready', 'ko-rive:error']") !== false, 'Visible managed Rive items must settle on either readiness or failure.');
+ko_assert(strpos($frontend_script, "window.addEventListener('load', loadHandler") === false, 'Adaptive readiness must not wait for every resource through window.load.');
+ko_assert(strpos($frontend_script, 'completionEvent') === false, 'Decorative Rive completion must not gate the adaptive Page Loader exit.');
+ko_assert(strpos($frontend_script, "window.addEventListener('click', handleNavigationClick, true)") !== false, 'Eligible internal clicks must arm the loader before the destination document arrives.');
+ko_assert(strpos($frontend_script, 'navigationLeadMaximum = 120') !== false && strpos($frontend_script, 'createNavigationHandoff') !== false, 'The outgoing loader must use a short bounded lead and pass its timing state forward.');
+ko_assert(strpos($frontend_script, 'deferredMenuNavigation') !== false && strpos($frontend_script, '[data-canvas="Fullwidth Nav"]') !== false, 'The loader must support the fullscreen menu controller that defers location.assign until its close sequence finishes.');
+ko_assert(strpos($frontend_script, "anchor.hasAttribute('download')") !== false && strpos($frontend_script, "target !== '_self'") !== false, 'Downloads and new-tab targets must not be intercepted by the navigation loader.');
+ko_assert(strpos($frontend_script, 'event.metaKey') !== false && strpos($frontend_script, 'event.ctrlKey') !== false, 'Modified clicks must remain native and loader-free.');
+ko_assert(strpos($frontend_script, "toDataURL('image/webp', 0.72)") !== false && strpos($frontend_script, 'canvasHasUsefulPaint') !== false, 'The outgoing bridge must capture only a useful painted frame in a bounded WebP form.');
+ko_assert(strpos($frontend_script, 'waitForUsefulNavigationFrame') !== false, 'The outgoing bridge must sample painted frames until the real loader produces a useful branded frame.');
+ko_assert(strpos($frontend_script, 'if (navigationBridge) { captureNavigationFrame(navigationBridge); }') !== false, 'The outgoing page must refresh the useful frame immediately before document replacement.');
+ko_assert(strpos($frontend_script, 'delete fallback.frameDataUrl') !== false, 'Session-storage quota failure must retry the handoff without the optional frame rather than trapping navigation.');
+ko_assert(strpos($frontend_script, "handoffFrame.className = 'ko-rive-handoff-frame'") !== false && strpos($frontend_script, 'releaseBootstrapWhenCovered') !== false, 'The destination must keep the captured frame painted until its replacement layer is decoded and covered.');
+ko_assert(strpos($frontend_script, 'waitForUsefulDestinationPaint') !== false && strpos($frontend_script, 'if (canvasHasUsefulPaint(canvas))') !== false, 'The carried frame must remain visible until the restarted destination Rive has useful branded paint, not merely an initialized white canvas.');
+$frontend_css = file_get_contents(dirname(__DIR__) . '/assets/css/backgrounds.css');
+ko_assert(strpos($frontend_css, '.ko-rive-loader.is-active') !== false && strpos($frontend_css, 'visibility: hidden') !== false, 'The loader element must remain hidden until the adaptive grace expires.');
+ko_assert(strpos($frontend_css, '.ko-rive-handoff-frame') !== false && strpos($frontend_css, '.ko-rive-loader.is-handoff-ready > .ko-rive-handoff-frame') !== false, 'The carried frame must crossfade only after the destination Rive canvas is ready.');
+ko_assert(strpos($frontend_css, ".ko-rive-loader.is-exiting {\n\topacity: 0;\n\tvisibility: visible;") !== false, 'The loader must stay visible while its configured opacity fade is running.');
 
 ob_start();
 $manager->render_preload_links();
